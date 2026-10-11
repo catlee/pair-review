@@ -2904,6 +2904,138 @@ describe('Review Submission Endpoint', () => {
   });
 
   describe('POST /api/pr/:owner/:repo/:number/submit-review', () => {
+    it.each(['COMMENT', 'DRAFT'])('retains outside-diff comments locally when submitting %s', async event => {
+      const included = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, side, body, status)
+        VALUES (?, 'user', 'file.js', 2, 'LEFT', 'Changed file comment', 'active')
+      `, [prId]);
+      const skipped = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, line_end, body, status)
+        VALUES (?, 'user', 'unchanged.js', 10, 12, 'Keep this local', 'active')
+      `, [prId]);
+
+      const response = await request(server).post('/api/pr/owner/repo/1/submit-review')
+        .send({ event, body: 'Review summary' });
+
+      expect(response.status).toBe(200);
+      const submit = event === 'DRAFT' ? GitHubClient.prototype.createDraftReviewGraphQL : GitHubClient.prototype.createReviewGraphQL;
+      const payload = submit.mock.calls[0][event === 'DRAFT' ? 2 : 3];
+      expect(payload).toHaveLength(1);
+      expect(payload[0]).toMatchObject({ path: 'file.js', side: 'LEFT' });
+      expect(response.body.skipped_comments).toEqual([expect.objectContaining({
+        id: skipped.lastID, file: 'unchanged.js', line_start: 10, line_end: 12,
+        body: 'Keep this local', reason: 'outside_diff'
+      })]);
+      expect(await query(db, 'SELECT id, status FROM comments ORDER BY id')).toEqual([
+        { id: included.lastID, status: event === 'DRAFT' ? 'draft' : 'submitted' },
+        { id: skipped.lastID, status: 'active' }
+      ]);
+    });
+
+    it('submits the review body when all comments are on unchanged files', async () => {
+      const skipped = await run(db, `
+        INSERT INTO comments (review_id, source, file, body, status, is_file_level)
+        VALUES (?, 'user', 'unchanged.js', 'File comment kept locally', 'active', 1)
+      `, [prId]);
+      const response = await request(server).post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Body-only review' });
+
+      expect(response.status).toBe(200);
+      expect(GitHubClient.prototype.createReviewGraphQL.mock.calls[0].slice(1, 4))
+        .toEqual(['COMMENT', 'Body-only review', []]);
+      expect(response.body.skipped_comments).toEqual([expect.objectContaining({ id: skipped.lastID, is_file_level: 1 })]);
+      expect((await query(db, 'SELECT status FROM comments WHERE id = ?', [skipped.lastID]))[0].status).toBe('active');
+    });
+
+    it('returns retained comments without creating an empty GitHub review', async () => {
+      const skipped = await run(db, `
+        INSERT INTO comments (review_id, source, file, body, status, is_file_level)
+        VALUES (?, 'user', 'unchanged.js', 'Keep this local', 'active', 1)
+      `, [prId]);
+      const response = await request(server).post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: '   ' });
+      expect(response.status).toBe(400);
+      expect(response.body.skippedComments).toEqual([expect.objectContaining({ id: skipped.lastID })]);
+      expect(GitHubClient.prototype.createReviewGraphQL).not.toHaveBeenCalled();
+      expect((await query(db, 'SELECT status FROM comments WHERE id = ?', [skipped.lastID]))[0].status).toBe('active');
+    });
+
+    it('rejects a bodyless REQUEST_CHANGES whose only comments are on unchanged files', async () => {
+      const skipped = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'unchanged.js', 4, 'Keep this local', 'active')
+      `, [prId]);
+      const response = await request(server).post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'REQUEST_CHANGES' });
+      expect(response.status).toBe(400);
+      expect(response.body.skippedComments).toEqual([expect.objectContaining({ id: skipped.lastID })]);
+      expect(GitHubClient.prototype.createReviewGraphQL).not.toHaveBeenCalled();
+    });
+
+    it('submits a bodyless APPROVE with no comments', async () => {
+      const response = await request(server).post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'APPROVE' });
+
+      expect(response.status).toBe(200);
+      expect(GitHubClient.prototype.createReviewGraphQL.mock.calls[0].slice(1, 4))
+        .toEqual(['APPROVE', '', []]);
+      expect(response.body.skipped_comments).toEqual([]);
+    });
+
+    it('submits a bodyless APPROVE whose only comments are on unchanged files', async () => {
+      const skipped = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'unchanged.js', 7, 'Keep this local', 'active')
+      `, [prId]);
+      const response = await request(server).post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'APPROVE', body: '' });
+
+      expect(response.status).toBe(200);
+      expect(GitHubClient.prototype.createReviewGraphQL.mock.calls[0].slice(1, 4))
+        .toEqual(['APPROVE', '', []]);
+      expect(response.body.skipped_comments).toEqual([expect.objectContaining({
+        id: skipped.lastID, file: 'unchanged.js', line_start: 7, reason: 'outside_diff'
+      })]);
+      expect((await query(db, 'SELECT status FROM comments WHERE id = ?', [skipped.lastID]))[0].status).toBe('active');
+    });
+
+    it('creates a bodyless DRAFT whose only comments are on unchanged files', async () => {
+      const skipped = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'unchanged.js', 3, 'Keep this local', 'active')
+      `, [prId]);
+      const response = await request(server).post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'DRAFT' });
+
+      expect(response.status).toBe(200);
+      expect(GitHubClient.prototype.createDraftReviewGraphQL.mock.calls[0].slice(1, 3))
+        .toEqual(['', []]);
+      expect(response.body.skipped_comments).toEqual([expect.objectContaining({ id: skipped.lastID })]);
+      expect((await query(db, 'SELECT status FROM comments WHERE id = ?', [skipped.lastID]))[0].status).toBe('active');
+    });
+
+    it('fails closed when changed files cannot be determined for active comments', async () => {
+      await run(db, `UPDATE pr_metadata SET pr_data = json_set(pr_data, '$.diff', '', '$.changed_files', json('[]'))`);
+      GitWorktreeManager.prototype.generateUnifiedDiff.mockResolvedValue('');
+      await run(db, `INSERT INTO comments (review_id, source, file, body, status)
+        VALUES (?, 'user', 'file.js', 'Review this', 'active')`, [prId]);
+      const response = await request(server).post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Review summary' });
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Could not determine');
+      expect(GitHubClient.prototype.createReviewGraphQL).not.toHaveBeenCalled();
+    });
+
+    it('allows a body-only review when changed files are unknown', async () => {
+      await run(db, `UPDATE pr_metadata SET pr_data = json_set(pr_data, '$.diff', '', '$.changed_files', json('[]'))`);
+      GitWorktreeManager.prototype.generateUnifiedDiff.mockResolvedValue('');
+      const response = await request(server).post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Review summary' });
+      expect(response.status).toBe(200);
+      expect(GitHubClient.prototype.createReviewGraphQL.mock.calls[0].slice(1, 4))
+        .toEqual(['COMMENT', 'Review summary', []]);
+    });
+
     it('should return 400 for invalid PR number', async () => {
       const response = await request(server)
         .post('/api/pr/owner/repo/invalid/submit-review')
@@ -3010,6 +3142,9 @@ describe('Review Submission Endpoint', () => {
     });
 
     it('should submit mixed file-level and line-level comments correctly', async () => {
+      const metadata = await queryOne(db, 'SELECT pr_data FROM pr_metadata WHERE pr_number = 1');
+      await run(db, 'UPDATE pr_metadata SET pr_data = ? WHERE pr_number = 1',
+        [JSON.stringify({ ...JSON.parse(metadata.pr_data), changed_files: ['file.js', 'file1.js'] })]);
       // Insert a file-level comment
       await run(db, `
         INSERT INTO comments (review_id, source, file, body, status, is_file_level)
@@ -3321,6 +3456,9 @@ describe('Review Submission Endpoint', () => {
     });
 
     it('should NOT delete comments or analysis_runs when submitting review (regression test for cascade deletion bug)', async () => {
+      const metadata = await queryOne(db, 'SELECT pr_data FROM pr_metadata WHERE pr_number = 1');
+      await run(db, 'UPDATE pr_metadata SET pr_data = ? WHERE pr_number = 1',
+        [JSON.stringify({ ...JSON.parse(metadata.pr_data), changed_files: ['file1.js', 'file2.js'] })]);
       // This test verifies the fix for a critical bug where INSERT OR REPLACE
       // on the reviews table caused cascade deletion of all related comments
       // and analysis_runs due to foreign key ON DELETE CASCADE constraints.
@@ -7641,6 +7779,15 @@ describe('Context Files Endpoints', () => {
       const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/existing-diff-file.js', line_start: 1, line_end: 10 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('already part of the diff');
+    });
+
+    it('should return 400 for a diff file spelled with a ./ prefix', async () => {
+      const response = await request(server)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: './src/existing-diff-file.js', line_start: 1, line_end: 10 });
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('already part of the diff');

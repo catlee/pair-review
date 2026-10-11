@@ -46,6 +46,23 @@ function findFileBlobInfoInDiff(diffText, fileName) {
   return null;
 }
 
+/**
+ * Whether a unified diff has a file section for `fileName`, as either its
+ * old or its new path (`diff --git a/<old> b/<new>`).
+ * @param {string} diffText - Unified diff
+ * @param {string} fileName - Repository-relative path
+ * @returns {boolean}
+ */
+function diffContainsPath(diffText, fileName) {
+  if (!diffText || !fileName) return false;
+  for (const line of diffText.split('\n')) {
+    if (!line.startsWith('diff --git ')) continue;
+    const paths = parseDiffGitPaths(line);
+    if (paths && (paths.oldPath === fileName || paths.newPath === fileName)) return true;
+  }
+  return false;
+}
+
 function isZeroObjectId(objectId) {
   return typeof objectId === 'string' && /^0+$/.test(objectId);
 }
@@ -81,6 +98,7 @@ function resolveOriginalFileContentSpec(prData, fileName) {
 }
 
 module.exports = {
+  diffContainsPath,
   findFileBlobInfoInDiff,
   parseDiffGitPaths,
   resolveOriginalFileContentSpecs,

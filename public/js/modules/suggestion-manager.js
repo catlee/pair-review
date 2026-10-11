@@ -15,6 +15,8 @@ class SuggestionManager {
     // Bumped by clearAISuggestions so a display already running stops
     // instead of putting the cleared findings back
     this._displayEpoch = 0;
+    // The list most recently requested for display (see redisplaySuggestions)
+    this._latestSuggestions = null;
 
     // Event delegation for "Ask about this" chat button on suggestions
     document.addEventListener('click', (e) => {
@@ -282,6 +284,17 @@ class SuggestionManager {
   }
 
   /**
+   * Show the most recently requested suggestions again, e.g. after new
+   * context-file panels render so findings in those files get placed. No
+   * refetch: the list is the one already displayed (or about to be).
+   * @returns {Promise<void>}
+   */
+  async redisplaySuggestions() {
+    if (!this._latestSuggestions) return;
+    await this.displayAISuggestions(this._latestSuggestions);
+  }
+
+  /**
    * Display AI suggestions inline with diff.
    *
    * Displays never interleave. A call made while one is running does not
@@ -293,6 +306,7 @@ class SuggestionManager {
    * @param {Array} suggestions - Array of suggestions to display
    */
   async displayAISuggestions(suggestions) {
+    this._latestSuggestions = suggestions;
     if (this._isDisplayingSuggestions) {
       console.log('[UI] displayAISuggestions already in progress, queued the latest request');
       this._pendingSuggestions = suggestions;
