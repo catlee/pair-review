@@ -10,8 +10,20 @@ describe('createChangedFilePredicate', () => {
     expect(resolve('./src/a.js')).toBe('src/a.js');
     expect(resolve('/src/a.js')).toBe('src/a.js');
     expect(resolve('src//a.js')).toBe('src/a.js');
-    expect(resolve('src/b.js')).toBe('src/b.js');
+    expect(resolve('src/b.js')).toBe('./src/b.js');
     expect(resolve('src/c.js')).toBeNull();
+  });
+
+  // The entry's own path comes back, never the normalized lookup key:
+  // normalizing trims whitespace, which is legal in git file names.
+  it('returns the entry path itself, keeping surrounding whitespace', () => {
+    const resolve = createChangedFilePredicate([{ file: 'docs/notes.md ' }]);
+    expect(resolve('docs/notes.md ')).toBe('docs/notes.md ');
+    expect(resolve('./docs/notes.md ')).toBe('docs/notes.md ');
+
+    const both = createChangedFilePredicate(['docs/notes.md ', 'docs/notes.md']);
+    expect(both('docs/notes.md ')).toBe('docs/notes.md ');
+    expect(both('docs/notes.md')).toBe('docs/notes.md');
   });
 
   it('accepts git numstat, GitHub API and plain-string entries', () => {

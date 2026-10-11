@@ -139,6 +139,64 @@ describe('SuggestionManager overlapping displays', () => {
     expect(window.aiPanel.addFindings).toHaveBeenCalledTimes(2);
     expect(window.aiPanel.addFindings.mock.calls.at(-1)[0][0].id).toBe('shown');
   });
+
+  // Regression: a context-file reload during a new run redisplays the
+  // remembered list. Starting the analysis cleared the findings through
+  // clearAISuggestions (PR startAnalysis and Local startLocalAnalysis both go
+  // through clearFindingsForNewAnalysis), which must forget that list.
+  it('redisplays nothing once the findings were cleared for a new analysis', async () => {
+    const sm = createSuggestionManager();
+    await sm.displayAISuggestions(findings('previous run'));
+    sm._pendingSuggestions = findings('queued');
+
+    const manager = Object.create(PRManager.prototype);
+    manager.suggestionManager = sm;
+    manager.showError = vi.fn();
+    manager.resetButton = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await manager.startAnalysis('o', 'r', 1, null, {});
+
+    expect(sm._latestSuggestions).toBeNull();
+    expect(sm._pendingSuggestions).toBeNull();
+    await sm.redisplaySuggestions();
+    expect(window.aiPanel.addFindings).toHaveBeenCalledTimes(1);
+  });
+
+  it('forgets the remembered list when the AI panel clears its findings', async () => {
+    const sm = createSuggestionManager();
+    await sm.displayAISuggestions(findings('previous run'));
+    window.prManager = { suggestionManager: sm };
+    const panel = Object.create(AIPanel.prototype);
+    panel.updateSegmentCounts = vi.fn();
+    panel.renderFindings = vi.fn();
+    panel._notifyFeedbackChanged = vi.fn();
+    panel.resetLevelFilter = vi.fn();
+
+    panel.clearAllFindings();
+
+    expect(sm._latestSuggestions).toBeNull();
+    await sm.redisplaySuggestions();
+    expect(window.aiPanel.addFindings).toHaveBeenCalledTimes(1);
+  });
+
+  it('abandons a redisplay that a clear interrupts', async () => {
+    let release;
+    const sm = createSuggestionManager();
+    await sm.displayAISuggestions(findings('shown'));
+    sm.prManager.ensureLinesVisible.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+
+    const redisplay = sm.redisplaySuggestions();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    sm.clearAISuggestions();
+    release();
+    await redisplay;
+
+    expect(window.aiPanel.addFindings).toHaveBeenCalledTimes(1);
+    expect(sm._latestSuggestions).toBeNull();
+    await sm.redisplaySuggestions();
+    expect(window.aiPanel.addFindings).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('context file remove lock', () => {
@@ -151,6 +209,14 @@ describe('context file remove lock', () => {
       .toBe("Can't remove: this file has 1 active AI finding. Dismiss or delete it to remove the file.");
     expect(blocker('a.js', [{ file: 'a.js', status: 'active' }, { file: 'a.js', status: 'adopted' }], [{ file: 'a.js', status: 'active' }]))
       .toBe("Can't remove: this file has 2 active AI findings and 1 comment. Dismiss or delete them to remove the file.");
+  });
+
+  it('checks a file against the feedback the AI panel shows', () => {
+    const manager = Object.create(PRManager.prototype);
+    expect(manager.contextFileRemovalBlocker('a.js')).toBeNull();
+    window.aiPanel = { findings: [], comments: [{ file: 'a.js', status: 'active' }] };
+    expect(manager.contextFileRemovalBlocker('a.js')).toContain('1 comment');
+    expect(manager.contextFileRemovalBlocker('b.js')).toBeNull();
   });
 
   it('locks and unlocks each context file as its feedback changes', () => {

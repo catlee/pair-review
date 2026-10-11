@@ -8883,6 +8883,20 @@ class PRManager {
   }
 
   /**
+   * getContextFileRemovalBlocker for a file, against the feedback the AI
+   * panel currently shows. Automatic removals (the guided tour cleaning up
+   * the context files it added) consult this too, so a panel that shows
+   * feedback is never removed behind the user's back.
+   * @param {string} file - Context file path
+   * @returns {string|null} Why the file cannot be removed, or null
+   */
+  contextFileRemovalBlocker(file) {
+    const findings = (typeof window !== 'undefined' && window.aiPanel?.findings) || [];
+    const comments = (typeof window !== 'undefined' && window.aiPanel?.comments) || [];
+    return PRManager.getContextFileRemovalBlocker(file, findings, comments);
+  }
+
+  /**
    * Lock or unlock each context file's remove button according to
    * getContextFileRemovalBlocker. Called whenever the displayed findings, the
    * selected run/voice or the comments change (AIPanel notifies), and after
@@ -8891,12 +8905,10 @@ class PRManager {
    */
   updateContextFileRemovability() {
     if (typeof document === 'undefined') return;
-    const findings = window.aiPanel?.findings || [];
-    const comments = window.aiPanel?.comments || [];
     for (const wrapper of document.querySelectorAll('.d2h-file-wrapper.context-file')) {
       const button = wrapper.querySelector('.context-file-dismiss');
       if (!button) continue;
-      const blocker = PRManager.getContextFileRemovalBlocker(wrapper.dataset.fileName, findings, comments);
+      const blocker = this.contextFileRemovalBlocker(wrapper.dataset.fileName);
       if (blocker) {
         button.setAttribute('aria-disabled', 'true');
         button.title = blocker;

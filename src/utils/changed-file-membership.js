@@ -4,9 +4,10 @@
  *
  * Suggestion validation, context-file seeding, comment auto-context and
  * GitHub submission all ask the same question, so they share this predicate.
- * Both sides are compared through `normalizePath` (so `./a.js` and `a.js`
- * agree). Nothing else is rewritten: a path containing ` => ` or `{a => b}`
- * is a literal file name here, never Git rename syntax. A real file named
+ * An exact match wins; otherwise both sides are compared through
+ * `normalizePath` (so `./a.js` and `a.js` agree), and the entry's own path
+ * is returned either way. Nothing else is rewritten: a path containing
+ * ` => ` or `{a => b}` is a literal file name here, never Git rename syntax. A real file named
  * `a => b.md` therefore matches only the changed-file entry `a => b.md`.
  */
 const { normalizePath } = require('./paths');
@@ -39,17 +40,28 @@ function createChangedFilePredicate(changedFiles, diff = '') {
     ? mergeChangedFilesWithDiff(changedFiles, diff)
     : (Array.isArray(changedFiles) ? changedFiles : []);
 
-  // Entry paths are git's own spelling; normalizing only drops a stray
-  // leading "./" or doubled slash.
-  const changedPaths = new Set(
-    entries.map(entry => normalizePath(changedFileEntryPath(entry))).filter(Boolean)
-  );
+  // Entry paths are git's own spelling. An exact match returns that entry;
+  // otherwise both sides are normalized (a stray leading "./" or doubled
+  // slash) to find it. Either way the entry's own path comes back, never the
+  // normalized lookup key: normalizing also trims whitespace, and a file
+  // named "notes.md " (git allows it) must keep its trailing space.
+  const entryPaths = new Set();
+  const byKey = new Map();
+  for (const entry of entries) {
+    const entryPath = changedFileEntryPath(entry);
+    if (!entryPath) continue;
+    entryPaths.add(entryPath);
+    const key = normalizePath(entryPath);
+    if (key && !byKey.has(key)) byKey.set(key, entryPath);
+  }
 
   const resolve = file => {
+    if (typeof file !== 'string' || !file) return null;
+    if (entryPaths.has(file)) return file;
     const key = normalizePath(file);
-    return key && changedPaths.has(key) ? key : null;
+    return (key && byKey.get(key)) || null;
   };
-  resolve.hasChangedFiles = changedPaths.size > 0;
+  resolve.hasChangedFiles = entryPaths.size > 0;
   return resolve;
 }
 
