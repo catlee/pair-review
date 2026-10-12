@@ -55,7 +55,7 @@ const {
 } = require('./shared');
 const { safeParseJson } = require('../utils/safe-parse-json');
 const { mergeChangedFilesWithDiff, parseUnifiedDiffPatches, buildChangedFileEntries } = require('../utils/diff-file-list');
-const { createChangedFilePredicate } = require('../utils/changed-file-membership');
+const { partitionByChangedFile } = require('../utils/changed-file-membership');
 const { parseHunks } = require('../utils/diff-hunks');
 const { hashHunk } = require('../ai/hunk-hashing');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
@@ -1553,27 +1553,23 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     // Comments on files outside the PR diff (e.g. on an AI finding in an
     // unchanged file) cannot be GitHub review comments. Skip them: they stay
     // active in pair-review and the response lists them for the UI.
-    const resolveChangedFile = createChangedFilePredicate(prData.changed_files, diffContent || prData.diff || '');
-    if (comments.length > 0 && !resolveChangedFile.hasChangedFiles) {
-      // Without the changed-file list every comment would look out of the
-      // diff; refuse rather than silently keep them all local.
-      return res.status(400).json({ error: "Could not determine the PR's changed files; reload the PR and try again" });
+    const { inDiff: submittableComments, outsideDiff, membershipKnown } = partitionByChangedFile(
+      comments, prData.changed_files, diffContent || prData.diff || ''
+    );
+    if (!membershipKnown && comments.length > 0) {
+      // Without the changed-file list, no comment is known to be outside the
+      // diff, so all of them are submitted (as analysis validation keeps all).
+      logger.warn(`Could not determine the changed files for PR #${prNumber}; submitting all ${comments.length} comment(s) without checking whether their files are in the PR diff`);
     }
-    const skippedComments = [];
-    const submittableComments = comments.flatMap(comment => {
-      const file = resolveChangedFile(comment.file);
-      if (file) return [{ ...comment, file }];
-      skippedComments.push({
-        id: comment.id,
-        file: comment.file,
-        line_start: comment.line_start,
-        line_end: comment.line_end,
-        body: comment.body,
-        is_file_level: comment.is_file_level,
-        reason: 'outside_diff'
-      });
-      return [];
-    });
+    const skippedComments = outsideDiff.map(comment => ({
+      id: comment.id,
+      file: comment.file,
+      line_start: comment.line_start,
+      line_end: comment.line_end,
+      body: comment.body,
+      is_file_level: comment.is_file_level,
+      reason: 'outside_diff'
+    }));
     if (skippedComments.length > 0) {
       logger.warn(`Not submitting ${skippedComments.length} comment(s) on files outside the PR diff for PR #${prNumber}; they remain in pair-review`);
     }

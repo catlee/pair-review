@@ -65,4 +65,38 @@ function createChangedFilePredicate(changedFiles, diff = '') {
   return resolve;
 }
 
-module.exports = { createChangedFilePredicate, changedFileEntryPath };
+/**
+ * Split items (comments or findings with a `file` field) into those on a
+ * changed file and those on files outside the diff. Items on a changed file
+ * come back spelled like their changed-file entry.
+ *
+ * When the changed-file list is unknown (empty, and the diff recovers nothing),
+ * no item is treated as outside the diff: every item is kept with its own
+ * path. This matches analysis-side validation (partitionSuggestionPaths).
+ *
+ * @param {Array<Object>|null} items - Items with a `file` field
+ * @param {Array<object|string>|null} changedFiles - changed_files entries or paths
+ * @param {string} [diff] - Full unified diff; recovers entries missing from changedFiles
+ * @returns {{inDiff: Array<Object>, outsideDiff: Array<Object>, membershipKnown: boolean}}
+ */
+function partitionByChangedFile(items, changedFiles, diff = '') {
+  const list = items || [];
+  const resolveChangedFile = createChangedFilePredicate(changedFiles, diff);
+  if (!resolveChangedFile.hasChangedFiles) {
+    return { inDiff: [...list], outsideDiff: [], membershipKnown: false };
+  }
+
+  const inDiff = [];
+  const outsideDiff = [];
+  for (const item of list) {
+    const file = resolveChangedFile(item?.file);
+    if (!file) {
+      outsideDiff.push(item);
+    } else {
+      inDiff.push(file === item.file ? item : { ...item, file });
+    }
+  }
+  return { inDiff, outsideDiff, membershipKnown: true };
+}
+
+module.exports = { createChangedFilePredicate, changedFileEntryPath, partitionByChangedFile };

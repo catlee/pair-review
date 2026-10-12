@@ -15,7 +15,7 @@ const { buildFileLineCountMap } = require('../utils/line-validation');
 const { partitionSuggestionPaths, filterSuggestionPaths, finalizeSuggestions } = require('../utils/suggestion-validation');
 const { seedContextFilesForSuggestions } = require('../utils/auto-context');
 const { getPromptBuilder } = require('./prompts');
-const { formatValidFiles } = require('./prompts/shared/valid-files');
+const { formatValidFiles, formatLevel3ChangedFilesSection } = require('./prompts/shared/valid-files');
 const { ADVERSARIAL_VERIFICATION_SECTION } = require('./prompts/shared/adversarial-verification');
 const { GIT_DIFF_FLAGS, GIT_PATH_CONFIG } = require('../git/diff-flags');
 const { splitNulPaths } = require('../utils/git-paths');
@@ -967,6 +967,23 @@ You should ONLY create suggestions for files in this list:
 ${changedFiles.map(f => `- ${f}`).join('\n')}
 
 Do NOT create suggestions for any files not in this list. If you cannot find issues in these files, that's okay - just return fewer suggestions.
+`;
+  }
+
+  /**
+   * Build the Level 3 changed files section. Unlike buildChangedFilesSection
+   * (Levels 1 and 2), it lists the changed files as context and allows
+   * findings in other files of the repository.
+   * @param {Array<string>} changedFiles - List of changed file paths
+   * @returns {string} Prompt section or empty string
+   */
+  buildLevel3ChangedFilesSection(changedFiles) {
+    if (!changedFiles || changedFiles.length === 0) {
+      return '';
+    }
+
+    return `
+${formatLevel3ChangedFilesSection(changedFiles)}
 `;
   }
 
@@ -2577,9 +2594,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
       // Note: Level 3 uses "changedFiles" key to match the {{changedFiles}} placeholder in Level 3 prompts.
       // Level 1/2 use "validFiles" key for their {{validFiles}} placeholder. Same underlying data,
-      // different naming to reflect semantic intent: L3 emphasizes "changed files in this PR" (context
-      // perspective for architectural analysis), while L1/L2 emphasize "valid files for suggestions"
-      // (constraint perspective for focused analysis).
+      // different meaning: for L3 the list is context (the template allows findings in other
+      // repository files), while for L1/L2 it is a constraint ("valid files for suggestions").
       const context = {
         reviewIntro: this.buildReviewIntroduction(prId, prMetadata),
         prContext: this.buildPRContextSection(prMetadata, criticalNote),
@@ -2606,7 +2622,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
-    const changedFilesSection = this.buildChangedFilesSection(changedFiles);
+    const changedFilesSection = this.buildLevel3ChangedFilesSection(changedFiles);
     const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath);
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}

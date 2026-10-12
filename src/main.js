@@ -30,7 +30,7 @@ const { storePRData, resolvePrHostBinding, registerRepositoryLocation, findRepos
 const { resolvePreflightBinding, setupHostParam, bindingRepositoryForHost } = require('./utils/host-resolution');
 const { fireReviewStartedHook } = require('./hooks/payloads');
 const { normalizeRepository } = require('./utils/paths');
-const { createChangedFilePredicate } = require('./utils/changed-file-membership');
+const { partitionByChangedFile } = require('./utils/changed-file-membership');
 const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
 const { buildReviewComments } = require('./utils/diff-annotator');
 const logger = require('./utils/logger');
@@ -1393,7 +1393,10 @@ async function loadHeadlessSuggestions(db, reviewId) {
 /**
  * Map a headless review's AI findings to GitHub review comments. Findings on
  * files outside the PR diff are skipped: GitHub cannot anchor them, so they
- * stay active in pair-review. Each skipped finding is logged.
+ * stay active in pair-review. Each skipped finding is logged. When the PR's
+ * changed-file list is unknown, no finding is treated as outside the diff and
+ * all of them are submitted, with a warning (partitionByChangedFile; the web
+ * submit route applies the same rule).
  *
  * The rest is the same mapping as the web submit route (buildReviewComments):
  * each comment keeps its side, ranges keep start_line, file-level findings
@@ -1403,20 +1406,20 @@ async function loadHeadlessSuggestions(db, reviewId) {
  * client.
  *
  * @param {Array<Object>} aiSuggestions - Rows from loadHeadlessSuggestions
- * @param {Array<object|string>} changedFiles - The PR's changed files
+ * @param {Array<object|string>|null} changedFiles - The PR's changed files
  * @param {string} diff - The PR's unified diff
  * @returns {{submittedSuggestions: Array<Object>, githubComments: Array<Object>}}
  */
 function buildHeadlessReviewComments(aiSuggestions, changedFiles, diff) {
-  const resolveChangedFile = createChangedFilePredicate(changedFiles, diff);
-  const submittedSuggestions = (aiSuggestions || []).flatMap(suggestion => {
-    const file = resolveChangedFile(suggestion.file);
-    if (!file) {
-      logger.warn(`Skipping suggestion for ${suggestion.file}:${suggestion.line_start} - file is outside the PR diff; the finding remains in pair-review`);
-      return [];
-    }
-    return [file === suggestion.file ? suggestion : { ...suggestion, file }];
-  });
+  const suggestions = aiSuggestions || [];
+  const { inDiff: submittedSuggestions, outsideDiff, membershipKnown } =
+    partitionByChangedFile(suggestions, changedFiles, diff);
+  if (!membershipKnown && suggestions.length > 0) {
+    logger.warn(`Could not determine the PR's changed files; submitting all ${suggestions.length} suggestion(s) without checking whether their files are in the PR diff`);
+  }
+  for (const suggestion of outsideDiff) {
+    logger.warn(`Skipping suggestion for ${suggestion.file}:${suggestion.line_start} - file is outside the PR diff; the finding remains in pair-review`);
+  }
 
   const githubComments = buildReviewComments(submittedSuggestions, diff, {
     // Same emoji + category prefix as adopted suggestions

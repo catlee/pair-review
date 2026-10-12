@@ -1212,7 +1212,7 @@ describe('Baseline Level 3 Fast', () => {
       customInstructions: '',
       lineNumberGuidance: '## Line Numbers\nUse annotated diff',
       generatedFiles: '',
-      changedFiles: '## Changed Files\n- src/api.js\n- src/utils.js',
+      changedFiles: '- src/api.js\n- src/utils.js',
       testingGuidance: 'Missing test coverage'
     };
 
@@ -1399,7 +1399,7 @@ describe('Baseline Level 3 Balanced', () => {
       customInstructions: '',
       lineNumberGuidance: '## Line Numbers\nUse annotated diff',
       generatedFiles: '',
-      changedFiles: '## Changed Files\n- src/api.js\n- src/utils.js',
+      changedFiles: '- src/api.js\n- src/utils.js',
       testingGuidance: 'Testing: Check for missing test coverage'
     };
 
@@ -1604,7 +1604,7 @@ describe('Baseline Level 3 Thorough', () => {
       customInstructions: '',
       lineNumberGuidance: '## Line Numbers\nUse annotated diff',
       generatedFiles: '',
-      changedFiles: '## Changed Files\n- src/api.js\n- src/utils.js',
+      changedFiles: '- src/api.js\n- src/utils.js',
       testingGuidance: 'Testing: Check for missing test coverage'
     };
 

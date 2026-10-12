@@ -1,5 +1,5 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi, onTestFinished } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'fs';
@@ -24,6 +24,7 @@ import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 const { GitHubClient } = require('../../src/github/client');
 const { GitWorktreeManager } = require('../../src/git/worktree');
 const configModule = require('../../src/config');
+const logger = require('../../src/utils/logger');
 
 // Per-file temp config dir. A fixed path like '/tmp/.pair-review-test' is
 // shared by every test file that mocks getConfigDir the same way — vitest
@@ -3014,16 +3015,28 @@ describe('Review Submission Endpoint', () => {
       expect((await query(db, 'SELECT status FROM comments WHERE id = ?', [skipped.lastID]))[0].status).toBe('active');
     });
 
-    it('fails closed when changed files cannot be determined for active comments', async () => {
+    it('submits every comment, with a warning, when changed files cannot be determined', async () => {
       await run(db, `UPDATE pr_metadata SET pr_data = json_set(pr_data, '$.diff', '', '$.changed_files', json('[]'))`);
       GitWorktreeManager.prototype.generateUnifiedDiff.mockResolvedValue('');
-      await run(db, `INSERT INTO comments (review_id, source, file, body, status)
-        VALUES (?, 'user', 'file.js', 'Review this', 'active')`, [prId]);
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      onTestFinished(() => warn.mockRestore());
+      const first = await run(db, `INSERT INTO comments (review_id, source, file, body, status, is_file_level)
+        VALUES (?, 'user', 'file.js', 'Review this', 'active', 1)`, [prId]);
+      const second = await run(db, `INSERT INTO comments (review_id, source, file, body, status, is_file_level)
+        VALUES (?, 'user', 'unchanged.js', 'And this', 'active', 1)`, [prId]);
+
       const response = await request(server).post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'COMMENT', body: 'Review summary' });
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('Could not determine');
-      expect(GitHubClient.prototype.createReviewGraphQL).not.toHaveBeenCalled();
+
+      expect(response.status).toBe(200);
+      expect(response.body.skipped_comments).toEqual([]);
+      const payload = GitHubClient.prototype.createReviewGraphQL.mock.calls[0][3];
+      expect(payload.map(comment => comment.path)).toEqual(['file.js', 'unchanged.js']);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Could not determine the changed files for PR #1; submitting all 2 comment(s)'));
+      expect(await query(db, 'SELECT id, status FROM comments WHERE id IN (?, ?) ORDER BY id', [first.lastID, second.lastID])).toEqual([
+        { id: first.lastID, status: 'submitted' },
+        { id: second.lastID, status: 'submitted' }
+      ]);
     });
 
     it('allows a body-only review when changed files are unknown', async () => {
