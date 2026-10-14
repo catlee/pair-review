@@ -25,6 +25,7 @@ const { GitHubClient } = require('../../src/github/client');
 const { GitWorktreeManager } = require('../../src/git/worktree');
 const configModule = require('../../src/config');
 const logger = require('../../src/utils/logger');
+const { QUOTEPATH_TRUE_DIFF } = require('../utils/git-path-fixtures');
 
 // Per-file temp config dir. A fixed path like '/tmp/.pair-review-test' is
 // shared by every test file that mocks getConfigDir the same way — vitest
@@ -3013,6 +3014,30 @@ describe('Review Submission Endpoint', () => {
         .toEqual(['', []]);
       expect(response.body.skipped_comments).toEqual([expect.objectContaining({ id: skipped.lastID })]);
       expect((await query(db, 'SELECT status FROM comments WHERE id = ?', [skipped.lastID]))[0].status).toBe('active');
+    });
+
+    // changed_files cached in git's old quoted spelling, and a diff whose
+    // headers are quoted too: a comment on the real (decoded) name is in the
+    // diff and goes to GitHub inline, not into skipped_comments.
+    it('submits a comment on a non-ASCII changed file cached in the quoted spelling', async () => {
+      const [{ pr_data: prDataJson }] = await query(db, 'SELECT pr_data FROM pr_metadata WHERE pr_number = 1');
+      const prData = JSON.parse(prDataJson);
+      prData.changed_files = [{ file: String.raw`"src/caf\303\251.js"` }];
+      prData.diff = QUOTEPATH_TRUE_DIFF;
+      await run(db, 'UPDATE pr_metadata SET pr_data = ? WHERE pr_number = 1', [JSON.stringify(prData)]);
+      GitWorktreeManager.prototype.generateUnifiedDiff.mockResolvedValue(QUOTEPATH_TRUE_DIFF);
+      const comment = await run(db, `INSERT INTO comments (review_id, source, file, line_start, side, body, status)
+        VALUES (?, 'user', 'src/café.js', 2, 'RIGHT', 'On a non-ASCII file', 'active')`, [prId]);
+
+      const response = await request(server).post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Review summary' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.skipped_comments).toEqual([]);
+      expect(GitHubClient.prototype.createReviewGraphQL.mock.calls[0][3]).toEqual([
+        { path: 'src/café.js', line: 2, body: 'On a non-ASCII file', side: 'RIGHT', isFileLevel: false }
+      ]);
+      expect((await query(db, 'SELECT status FROM comments WHERE id = ?', [comment.lastID]))[0].status).toBe('submitted');
     });
 
     it('submits every comment, with a warning, when changed files cannot be determined', async () => {

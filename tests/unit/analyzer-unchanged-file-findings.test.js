@@ -8,6 +8,7 @@ import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/
 const Analyzer = require('../../src/ai/analyzer');
 const ws = require('../../src/ws');
 const logger = require('../../src/utils/logger');
+const { QUOTEPATH_TRUE_DIFF } = require('../utils/git-path-fixtures');
 
 const finding = (overrides = {}) => ({
   file: 'unchanged.js', line_start: 30, line_end: 35, old_or_new: 'OLD',
@@ -131,5 +132,52 @@ describe.each(['pr', 'local'])('Analyzer findings on unchanged files (%s mode)',
     await analyzer.storeSuggestions(reviewId, 'run', finalized, null, ['changed.js'], repoRoot);
     expect(comments()).toMatchObject([{ file: 'unchanged.js', line_start: null, is_file_level: 1 }]);
     expect(contextFiles()).toMatchObject([{ file: 'unchanged.js', line_start: 1, line_end: 50 }]);
+  });
+});
+
+// A PR whose changed_files was cached in git's old quoted spelling. The file
+// exists in the checkout too, so a membership miss would store the finding as
+// an unchanged-file finding (forced to RIGHT, with a context panel).
+describe('Analyzer findings on a non-ASCII changed file', () => {
+  let db, repoRoot, reviewId, analyzer;
+
+  beforeEach(() => {
+    repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'analyzer-non-ascii-'));
+    fs.mkdirSync(path.join(repoRoot, 'src'));
+    fs.writeFileSync(path.join(repoRoot, 'src', 'café.js'), 'keep\nnew\n');
+    db = createTestDatabase();
+    reviewId = seedTestReview(db);
+    db.prepare('INSERT INTO pr_metadata (pr_number, repository, pr_data) VALUES (1, ?, ?)').run('test/repo', JSON.stringify({
+      changed_files: [{ file: String.raw`"src/caf\303\251.js"` }],
+      diff: QUOTEPATH_TRUE_DIFF
+    }));
+    db.prepare('INSERT INTO analysis_runs (id, review_id) VALUES (?, ?)').run('run', reviewId);
+    analyzer = new Analyzer(db, 'sonnet', 'claude');
+    vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
+    vi.spyOn(logger, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    closeTestDatabase(db);
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it('reads the decoded changed files from PR metadata', async () => {
+    expect(await analyzer.getValidFilePaths(reviewId)).toEqual(['src/café.js', 'ñew dir/moved é.js']);
+  });
+
+  it('keeps the finding as a changed-file finding when stored without a changed-file list', async () => {
+    await analyzer.storeSuggestions(reviewId, 'run', [finding({ file: 'src/café.js', line_start: 2, line_end: 2 })], null, null, repoRoot);
+
+    expect(db.prepare('SELECT file, side FROM comments').all()).toEqual([{ file: 'src/café.js', side: 'LEFT' }]);
+    expect(db.prepare('SELECT * FROM context_files').all()).toEqual([]);
+  });
+
+  it('keeps its side through validation against the decoded list', async () => {
+    const validFiles = await analyzer.getValidFilePaths(reviewId);
+    const input = [finding({ file: 'src/café.js', line_start: 2, line_end: 2 })];
+    const finalized = await analyzer.validateAndFinalizeSuggestions(input, new Map(), validFiles, repoRoot);
+    expect(finalized).toEqual(input);
   });
 });

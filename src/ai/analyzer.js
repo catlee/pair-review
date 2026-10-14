@@ -10,10 +10,10 @@ const execPromise = util.promisify(exec);
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
-const { normalizePath } = require('../utils/paths');
 const { buildFileLineCountMap } = require('../utils/line-validation');
 const { partitionSuggestionPaths, filterSuggestionPaths, finalizeSuggestions } = require('../utils/suggestion-validation');
 const { seedContextFilesForSuggestions } = require('../utils/auto-context');
+const { getDiffFileList } = require('../utils/diff-file-list');
 const { getPromptBuilder } = require('./prompts');
 const { formatValidFiles, formatLevel3ChangedFilesSection } = require('./prompts/shared/valid-files');
 const { ADVERSARIAL_VERIFICATION_SECTION } = require('./prompts/shared/adversarial-verification');
@@ -1981,7 +1981,12 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
   }
 
   /**
-   * Get valid file paths from PR metadata
+   * Get valid file paths from PR metadata, read through getDiffFileList (the
+   * same reader as context files and seeding): cached changed_files merged
+   * with the cached diff, so entries cached in git's quoted spelling are
+   * re-spelled to match the decoded diff headers. Paths are the entries' own
+   * spelling, never normalized: the membership check (changed-file-membership)
+   * matches exactly first and must return the entry path unchanged.
    * @param {number} reviewId - Review ID (from reviews table, NOT pr_metadata.id)
    * @returns {Promise<Array<string>>} Array of valid file paths from the PR diff
    */
@@ -2004,26 +2009,11 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         return [];
       }
 
-      // Now look up pr_metadata using the natural key (pr_number + repository)
-      const prMetadata = await queryOne(this.db, `
-        SELECT pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-      `, [review.pr_number, review.repository]);
-
-      if (!prMetadata || !prMetadata.pr_data) {
-        logger.warn(`[FAILSAFE] PR metadata not found for PR #${review.pr_number} in ${review.repository}`);
-        return [];
+      const files = await getDiffFileList(this.db, review);
+      if (files.length === 0) {
+        logger.warn(`[FAILSAFE] PR metadata not found, or it lists no changed files, for PR #${review.pr_number} in ${review.repository}`);
       }
-
-      const prData = JSON.parse(prMetadata.pr_data);
-      const changedFiles = prData.changed_files || [];
-
-      // Extract file paths and normalize them
-      return changedFiles.map(f => {
-        // changed_files entries can be objects with 'file' property or just strings
-        const filePath = typeof f === 'string' ? f : (f.file || '');
-        return normalizePath(filePath);
-      }).filter(p => p.length > 0);
-
+      return files;
     } catch (error) {
       logger.error(`[FAILSAFE] Error getting valid file paths: ${error.message}`);
       return [];

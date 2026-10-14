@@ -16,6 +16,8 @@ const { AIPanel } = require('../../public/js/components/AIPanel.js');
 require('../../public/js/modules/analysis-history.js');
 const AnalysisHistoryManager = window.AnalysisHistoryManager;
 const { ReviewModal } = require('../../public/js/components/ReviewModal.js');
+global.STALE_TIMEOUT = 2000;
+const { LocalManager } = require('../../public/js/local.js');
 
 if (typeof globalThis.CSS === 'undefined' || typeof globalThis.CSS.escape !== 'function') {
   globalThis.CSS = window.CSS && typeof window.CSS.escape === 'function'
@@ -44,7 +46,9 @@ function contextWrapper(file) {
   return wrapper;
 }
 
-describe('SuggestionManager overlapping displays', () => {
+// The latest-wins display queue itself is covered by
+// suggestion-display-queue.test.js; these cover redisplaySuggestions on it.
+describe('SuggestionManager redisplay', () => {
   function createSuggestionManager({ ensureLinesVisible } = {}) {
     const sm = Object.create(SuggestionManager.prototype);
     sm._isDisplayingSuggestions = false;
@@ -62,28 +66,6 @@ describe('SuggestionManager overlapping displays', () => {
   }
   const findings = id => [{ id, file: 'a.js', line_start: 1, line_end: 1 }];
 
-  it('queues the latest request made during a display and shows it afterwards', async () => {
-    let release;
-    let calls = 0;
-    const sm = createSuggestionManager({
-      ensureLinesVisible: () => (calls++ === 0 ? new Promise(resolve => { release = resolve; }) : Promise.resolve())
-    });
-
-    const first = sm.displayAISuggestions(findings('first'));
-    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
-    // Both return at once while the first display runs; only the latest is kept
-    await sm.displayAISuggestions(findings('second'));
-    await sm.displayAISuggestions(findings('third'));
-    expect(window.aiPanel.addFindings).not.toHaveBeenCalled();
-
-    release();
-    await first;
-    await vi.waitFor(() => expect(window.aiPanel.addFindings).toHaveBeenCalledTimes(2));
-    expect(window.aiPanel.addFindings.mock.calls.map(([list]) => list[0].id)).toEqual(['first', 'third']);
-    expect(sm._isDisplayingSuggestions).toBe(false);
-    expect(sm._pendingSuggestions).toBeNull();
-  });
-
   it('does not deadlock when a running display waits on work that requests a display', async () => {
     const sm = createSuggestionManager();
     // e.g. a deferred diff render whose re-anchor reloads the suggestions
@@ -94,39 +76,6 @@ describe('SuggestionManager overlapping displays', () => {
     await sm.displayAISuggestions(findings('initial'));
     await vi.waitFor(() => expect(window.aiPanel.addFindings.mock.calls.at(-1)[0][0].id).toBe('reanchored'));
     expect(sm._isDisplayingSuggestions).toBe(false);
-  });
-
-  it('keeps a failing display its own error and logs a failing queued one', async () => {
-    let release;
-    const sm = createSuggestionManager();
-    sm.prManager.ensureLinesVisible
-      .mockImplementationOnce(() => new Promise((_, reject) => { release = () => reject(new Error('first failed')); }))
-      .mockImplementationOnce(async () => { throw new Error('queued failed'); });
-    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    const first = sm.displayAISuggestions(findings('first'));
-    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
-    await sm.displayAISuggestions(findings('queued'));
-    release();
-
-    await expect(first).rejects.toThrow('first failed');
-    await vi.waitFor(() => expect(logged).toHaveBeenCalledWith('[UI] Queued suggestion display failed:', expect.any(Error)));
-    expect(sm._isDisplayingSuggestions).toBe(false);
-  });
-
-  it('routes a queued display through PRManager so its post-display refresh runs', async () => {
-    let release;
-    const sm = createSuggestionManager();
-    sm.prManager.ensureLinesVisible.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
-    sm.prManager.displayAISuggestions = vi.fn(list => sm.displayAISuggestions(list));
-
-    const first = sm.displayAISuggestions(findings('first'));
-    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
-    await sm.displayAISuggestions(findings('queued'));
-    release();
-    await first;
-    await vi.waitFor(() => expect(sm.prManager.displayAISuggestions).toHaveBeenCalledTimes(1));
-    expect(sm.prManager.displayAISuggestions.mock.calls[0][0][0].id).toBe('queued');
   });
 
   it('redisplays the most recently requested list, and nothing before any request', async () => {
@@ -159,6 +108,26 @@ describe('SuggestionManager overlapping displays', () => {
 
     expect(sm._latestSuggestions).toBeNull();
     expect(sm._pendingSuggestions).toBeNull();
+    await sm.redisplaySuggestions();
+    expect(window.aiPanel.addFindings).toHaveBeenCalledTimes(1);
+  });
+
+  it('redisplays nothing once a Local analysis start cleared the findings', async () => {
+    const sm = createSuggestionManager();
+    await sm.displayAISuggestions(findings('previous run'));
+
+    const manager = Object.create(PRManager.prototype);
+    manager.suggestionManager = sm;
+    manager.showError = vi.fn();
+    manager.resetButton = vi.fn();
+    window.prManager = manager;
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, json: async () => ({ error: 'stop here' }) })));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const localManager = Object.create(LocalManager.prototype);
+    localManager.reviewId = 42;
+    await localManager.startLocalAnalysis(null, { provider: 'claude' });
+
+    expect(sm._latestSuggestions).toBeNull();
     await sm.redisplaySuggestions();
     expect(window.aiPanel.addFindings).toHaveBeenCalledTimes(1);
   });

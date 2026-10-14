@@ -1,6 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import express from 'express';
 import nodeFs from 'fs';
 import os from 'os';
@@ -213,6 +213,43 @@ describe('GET /api/reviews/:reviewId/file-content/:fileName', () => {
     }
   });
 
+  // The diff spells these names quoted: `quo"te.js` always, `café.js` in a
+  // diff cached with git's default core.quotePath=true. Membership decodes the
+  // headers, so both are in-diff files served from the base blob, not the
+  // checkout an unchanged (context) file is read from.
+  it.each(['quo"te.js', 'café.js'])('serves the base version of in-diff file %s whose header is quoted', async file => {
+    const tempRepo = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-quoted-file-content-'));
+    try {
+      const git = (...args) => execFileSync('git', args, { cwd: tempRepo, encoding: 'utf8', stdio: 'pipe' });
+      git('init', '-q', '-b', 'main');
+      git('config', 'user.email', 'test@test.com');
+      git('config', 'user.name', 'Test User');
+      git('config', 'core.quotePath', 'true');
+      nodeFs.writeFileSync(path.join(tempRepo, file), 'base line 1\nbase line 2\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'base');
+      const baseSha = git('rev-parse', 'HEAD').trim();
+      nodeFs.writeFileSync(path.join(tempRepo, file), 'head line 1\nbase line 2\n');
+      git('commit', '-q', '-am', 'head');
+      const headSha = git('rev-parse', 'HEAD').trim();
+      const diff = git('diff', '--full-index', `${baseSha}...${headSha}`);
+      expect(diff).toMatch(/^diff --git "a\//m);
+
+      await run(db, `INSERT INTO pr_metadata (pr_number, repository, pr_data) VALUES (14, 'owner/repo', ?)`, [
+        JSON.stringify({ worktree_path: tempRepo, diff, base_sha: baseSha, head_sha: headSha, changed_files: [{ file }] })
+      ]);
+      const review = await run(db, `INSERT INTO reviews (pr_number, repository, status) VALUES (14, 'owner/repo', 'draft')`);
+
+      const response = await request(server).get(`/api/reviews/${review.lastID}/file-content/${encodeURIComponent(file)}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.lines[0]).toBe('base line 1');
+      expect(readFileSpy).not.toHaveBeenCalled();
+    } finally {
+      nodeFs.rmSync(tempRepo, { recursive: true, force: true });
+    }
+  });
+
   it('returns 404 when the PR checkout cannot be found', async () => {
     await run(db, `INSERT INTO pr_metadata (pr_number, repository, pr_data)
       VALUES (13, 'owner/repo', ?)`, [JSON.stringify({ diff: '', changed_files: [] })]);
@@ -324,6 +361,25 @@ describe('GET /api/reviews/:reviewId/file-content/:fileName', () => {
       const response = await fileContent(reviewId, 'escape.txt');
 
       expect(response.status).toBe(403);
+      expect(readFileSpy).not.toHaveBeenCalled();
+    });
+
+    // `git diff` in this repo quotes both names (core.quotePath defaults to
+    // true), as a snapshot cached by an older version would. Decoded, both
+    // are in the diff and read HEAD, not the working tree.
+    it.each(['quo"te.js', 'café.js'])('serves HEAD for in-diff file %s whose snapshot header is quoted', async file => {
+      nodeFs.writeFileSync(path.join(tempRepo, file), 'head quoted 1\n');
+      git('add -A');
+      git('commit -m quoted');
+      const quotedHead = git('rev-parse HEAD').trim();
+      nodeFs.writeFileSync(path.join(tempRepo, file), 'worktree quoted 1\n');
+      expect(git('diff')).toMatch(/^diff --git "a\//m);
+
+      const reviewId = await insertLocalReview({ head: quotedHead });
+      const response = await fileContent(reviewId, file);
+
+      expect(response.status).toBe(200);
+      expect(response.body.lines[0]).toBe('head quoted 1');
       expect(readFileSpy).not.toHaveBeenCalled();
     });
 

@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 
 const { createChangedFilePredicate, changedFileEntryPath, partitionByChangedFile } = require('../../src/utils/changed-file-membership');
+const { QUOTEPATH_FALSE_DIFF, QUOTEPATH_TRUE_DIFF } = require('../utils/git-path-fixtures');
 
 describe('createChangedFilePredicate', () => {
   it('returns the canonical changed-file path for normalized spellings', () => {
@@ -121,5 +122,41 @@ describe('partitionByChangedFile', () => {
 
   it('treats items without a file as outside a known diff', () => {
     expect(partitionByChangedFile([{ id: 1 }, null], ['a.js']).outsideDiff).toEqual([{ id: 1 }, null]);
+  });
+});
+
+// Paths are decoded once, by the diff readers (main's git-paths): changed_files
+// read with the diff goes through mergeChangedFilesWithDiff, which re-spells
+// entries cached in git's old quoted form and recovers files from the decoded
+// diff headers. The predicate itself never decodes or rewrites a path.
+describe('membership with quoted and non-ASCII paths', () => {
+  const legacyQuoted = [{ file: String.raw`"src/caf\303\251.js"` }];
+
+  it('matches the real name of an entry cached in the quoted spelling, via the diff', () => {
+    const resolve = createChangedFilePredicate(legacyQuoted, QUOTEPATH_TRUE_DIFF);
+    expect(resolve('src/café.js')).toBe('src/café.js');
+    expect(resolve('ñew dir/moved é.js')).toBe('ñew dir/moved é.js');
+  });
+
+  it('does not decode a quoted entry on its own, without a diff to confirm it', () => {
+    const resolve = createChangedFilePredicate(legacyQuoted);
+    expect(resolve('src/café.js')).toBeNull();
+  });
+
+  it('keeps a finding on a non-ASCII changed file in the diff and skips an unchanged one', () => {
+    const { inDiff, outsideDiff, membershipKnown } = partitionByChangedFile(
+      [{ id: 1, file: 'src/café.js' }, { id: 2, file: 'src/cafe.js' }], legacyQuoted, QUOTEPATH_TRUE_DIFF
+    );
+    expect(membershipKnown).toBe(true);
+    expect(inDiff).toEqual([{ id: 1, file: 'src/café.js' }]);
+    expect(outsideDiff).toEqual([{ id: 2, file: 'src/cafe.js' }]);
+  });
+
+  it('matches names the diff C-quotes, and literal rename-looking names, from the diff alone', () => {
+    const resolve = createChangedFilePredicate([], QUOTEPATH_FALSE_DIFF);
+    expect(resolve('quo"te.js')).toBe('quo"te.js');
+    expect(resolve('x b/y.js')).toBe('x b/y.js');
+    expect(resolve('a => b.md')).toBe('a => b.md');
+    expect(resolve('b.md')).toBeNull();
   });
 });
