@@ -1,5 +1,49 @@
 # Changelog
 
+## 5.3.5
+
+### Patch Changes
+
+- 7ebd8ef: Add Muse Wonder and Muse Wonder Full models to the Muse provider (thorough tier, high and max reasoning effort). Wonder Full requires a Muse Code Power Usage or Maximum Usage subscription. Every Wonder entry runs with contributor mode off.
+- d8f7b3b: Update the Antigravity (`agy`) provider's built-in models to match agy 1.3.5: add Gemini 4 Argon (thorough tier; Google AI Ultra and eligible Gemini Enterprise plans only) and Gemini 3.8 Flash (Medium) as the balanced tier, and remove the retired Gemini 3.1 Pro (High/Low) models, which agy no longer offers. Gemini 3.8 Flash (High) remains the default.
+
+  Switching providers in the analysis dialog or repository settings now keeps the new provider's default model when it is in the same tier as the previous selection, instead of taking that tier's first model, which could be one your plan cannot run.
+
+  Cursor's default model is now Composer 1.5 (previously Claude 4.6 Sonnet (Thinking)).
+
+- e37f228: Fix diffs with removed lines starting with `--` or added lines starting with `++` (such as SQL or Lua comments)
+
+  - These lines no longer shift the line numbers after them. Comments on the file are submitted to GitHub as inline comments on the right line, and the annotated diff the AI reads has the right line numbers.
+  - Added and deleted line counts now include these lines.
+  - A hunk is no longer skipped when the function name shown in its `@@` header contains a carriage return. Its lines are counted and numbered.
+
+- c9e0405: Fix several small review issues. File-level AI suggestion cards from a previous analysis run or level no longer linger when the new results have no file-level findings, reloading user comments leaves the current AI cards in place, and the card of a deleted or dismissed last file-level comment is removed. Starting a new analysis now clears the previous run's file-level AI cards and the suggestion navigator list along with the inline suggestions, in Local mode as well as PR mode. When suggestions are reloaded several times in quick succession, the latest list is the one shown. The suggestion navigator keeps its selection when suggestions refresh (for example after adopting or dismissing one), and shows an error when a finding cannot be shown in the diff instead of doing nothing, but not while suggestions are being reloaded. Headless `--ai-draft` / `--ai-review` submissions now map findings the same way as submitting from the web UI: findings on deleted lines go to the LEFT side of the diff instead of always RIGHT, multi-line findings are posted as ranges, file-level findings are posted as file comments instead of being dropped, and a finding on a line outside the diff hunks is posted as a file comment with a "(Ref Line N)" prefix instead of failing the submission. Headless submissions to a GitHub-compatible alternate host now send the PR head commit with each inline comment, as the web UI does, so the host no longer rejects them with a "commit_id missing" error. A multi-line comment whose ends fall in different diff hunks, or whose lines are given in reverse order, no longer makes GitHub reject the whole review: a reversed range is put in order, and a range that cannot be one thread is posted on its first line, or as a file comment with a "(Ref Lines N-M)" prefix when that line is outside the diff. Multi-line comments on deleted lines now start on the LEFT side instead of GitHub's default RIGHT.
+- 154ebdd: Handle non-ASCII and quoted file paths. Files with accented, CJK or emoji names, and files whose names contain quotes or backslashes, now show their real names in the file list and diff, keep their patches, and anchor comments and AI suggestions in both PR and Local reviews, including inline comments submitted to GitHub. Inline comments on files whose names contain a space are no longer turned into file-level comments when the review is submitted. Sparse-checkout directories with non-ASCII names are recognized, so they are no longer re-added on every PR setup or shown escaped to the AI. The code-critic plugin's annotated diff names these files the same way. Renamed files are recorded as renames even when the old and new paths share nothing, and a file literally named like a rename (`a => b.md`) is no longer mistaken for one. Refresh an existing review to respell paths it cached before this fix.
+- 0e99d77: Fix the Review, Chat and file navigator panels being unreachable on slim screens
+
+  - Below 900px (1200px for the file navigator) the panels were hidden, but their toolbar
+    toggles stayed visible and did nothing. The panels now open as drawers over the diff,
+    just below the toolbar, so the toggles keep working and the diff keeps its full width.
+  - Wider than 900px, Review and Chat also float over the diff instead of sitting beside it
+    when that would leave the diff too narrow to read (for example both panels at ~950px).
+  - On very narrow screens, Review and Chat open together stack one above the other instead
+    of squeezing side by side, and the layout picker only offers the stacked layouts. Your
+    chosen layout is kept and comes back when the window is wide enough.
+  - The file navigator drawer closes when you pick a file and doesn't change whether the
+    navigator is collapsed on wider screens.
+  - With the file navigator collapsed, the Review and Chat panels can now be resized wider.
+    The size limit no longer reserves room for the hidden navigator.
+  - The toolbar no longer overlaps the guided-tour bar when the bar's text wraps on narrow
+    screens.
+  - At 768px and narrower the page no longer runs 16px past the bottom of the window, which
+    cut off the bottom of the diff and of the panels, including the Chat input.
+
+- 49f18d7: Keep long file paths and AI suggestion titles on one line in narrow panes
+
+  - Long file paths in diff headers no longer wrap onto several lines. They truncate from the front, GitHub-style ("…/deep/folder/file.js"), so the file name stays visible.
+  - AI suggestion titles truncate at the end, and shrink before the badges next to them. The "AI Suggestion" badge is no longer clipped and "Nice Work" no longer wraps while the title still has room.
+  - Hovering truncated text shows the full text in the browser's tooltip. Text that fits gets no tooltip of its own, so a collapsed suggestion still shows its "Dismissed" or "Adopted" tooltip.
+
 ## 5.3.4
 
 ### Patch Changes
